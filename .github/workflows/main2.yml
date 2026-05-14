@@ -23,29 +23,31 @@ jobs:
           fetch-depth: 0
 
       - name: Install yt-dlp
-        run: |
-          pip install yt-dlp
+        run: pip install yt-dlp
 
       - name: Download media from Telegram
         run: |
           echo "🌐 Downloading from: ${{ github.event.inputs.telegram_link }}"
-          # yt-dlp automatically handles Telegram t.me links
+          mkdir -p downloads
+          # yt-dlp for Telegram public posts
           yt-dlp \
             --no-playlist \
             --write-info-json \
             --write-description \
             --embed-metadata \
-            --output "downloads/%(title)s.%(ext)s" \
-            "${{ github.event.inputs.telegram_link }}"
+            --output "downloads/%(title)s [%(id)s].%(ext)s" \
+            "${{ github.event.inputs.telegram_link }}" || echo "yt-dlp finished with warnings (maybe no media)"
 
       - name: Commit and push downloaded files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
-          if git diff --staged --quiet; then
-            echo "No new files to commit"
-          else
+          
+          # Check if anything was downloaded
+          if [ -d downloads ] && [ "$(ls -A downloads)" ]; then
+            git add downloads/
             git commit -m "📥 Download from Telegram: ${{ github.event.inputs.telegram_link }}"
             git push
+          else
+            echo "⚠️ هیچ فایلی دانلود نشد. مطمئن شوید لینک عمومی است و پست حاوی مدیا باشد."
           fi
