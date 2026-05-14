@@ -1,4 +1,4 @@
-name: 📥 TG Downloader
+name: 📥 TG Downloader (No Activation)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
 
 jobs:
   download:
-    name: "📥 دانلود از تلگرام با yt-dlp"
+    name: "📥 دانلود از تلگرام"
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -22,32 +22,106 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      - name: Install yt-dlp
-        run: pip install yt-dlp
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
 
-      - name: Download media from Telegram
+      - name: Install dependencies
+        run: pip install requests beautifulsoup4
+
+      - name: Create and run download script
         run: |
-          echo "🌐 Downloading from: ${{ github.event.inputs.telegram_link }}"
-          mkdir -p downloads
-          # yt-dlp for Telegram public posts
-          yt-dlp \
-            --no-playlist \
-            --write-info-json \
-            --write-description \
-            --embed-metadata \
-            --output "downloads/%(title)s [%(id)s].%(ext)s" \
-            "${{ github.event.inputs.telegram_link }}" || echo "yt-dlp finished with warnings (maybe no media)"
+          cat << 'EOF' > tg_downloader.py
+          import sys, os, re, requests
+          from bs4 import BeautifulSoup
+          from urllib.parse import urljoin, urlparse, unquote
+
+          def download_telegram_post(post_url):
+              # Convert to embed URL for easier parsing
+              if '/s/' not in post_url:
+                  post_url = post_url.replace('https://t.me/', 'https://t.me/s/')
+              embed_url = post_url + '?embed=1&mode=tme'
+
+              headers = {'User-Agent': 'Mozilla/5.0 (compatible; TelegramBot)'}
+              resp = requests.get(embed_url, headers=headers)
+              resp.raise_for_status()
+              soup = BeautifulSoup(resp.text, 'html.parser')
+
+              # Create download folder
+              os.makedirs('downloads', exist_ok=True)
+
+              # Find images (background images in photo wraps)
+              for photo_wrap in soup.select('.tgme_widget_message_photo_wrap'):
+                  style = photo_wrap.get('style', '')
+                  match = re.search(r"background-image:\s*url\('(.+?)'\)", style)
+                  if match:
+                      img_url = match.group(1)
+                      download_file(img_url, 'downloads')
+
+              # Find videos
+              for video in soup.find_all('video'):
+                  src = video.get('src')
+                  if src:
+                      download_file(src, 'downloads')
+
+              # Find video thumbnails (alternative video links)
+              for video_wrap in soup.select('.tgme_widget_message_video_wrap'):
+                  style = video_wrap.get('style', '')
+                  match = re.search(r"background-image:\s*url\('(.+?)'\)", style)
+                  if match:
+                      thumb_url = match.group(1)
+                      # Download thumbnail as image (might be the only available media)
+                      download_file(thumb_url, 'downloads')
+
+              # Find document/file links
+              for doc_link in soup.select('.tgme_widget_message_document_wrap'):
+                  href = doc_link.get('href')
+                  if href:
+                      full_url = urljoin(embed_url, href)
+                      download_file(full_url, 'downloads')
+
+              print("✅ دانلود کامل شد.")
+
+          def download_file(url, folder):
+              try:
+                  full_url = url if url.startswith('http') else 'https://t.me' + url
+                  filename = unquote(os.path.basename(urlparse(full_url).path))
+                  if not filename:
+                      filename = 'media_' + os.path.basename(full_url).split('?')[0] + '.jpg'
+                  # Sanitize filename
+                  filename = re.sub(r'[<>:"/\\|?*]', '_', filename)
+                  filepath = os.path.join(folder, filename)
+                  if os.path.exists(filepath):
+                      print(f"⏭️ {filename} already exists, skipping.")
+                      return
+                  print(f"📥 Downloading {filename}...")
+                  r = requests.get(full_url, headers={'User-Agent': 'Mozilla/5.0'}, stream=True)
+                  r.raise_for_status()
+                  with open(filepath, 'wb') as f:
+                      for chunk in r.iter_content(chunk_size=8192):
+                          f.write(chunk)
+                  print(f"✅ Downloaded: {filename}")
+              except Exception as e:
+                  print(f"⚠️ Failed to download {url}: {e}")
+
+          if __name__ == '__main__':
+              if len(sys.argv) < 2:
+                  print("Usage: python tg_downloader.py <t.me link>")
+                  sys.exit(1)
+              download_telegram_post(sys.argv[1])
+          EOF
+
+          python tg_downloader.py "${{ github.event.inputs.telegram_link }}"
 
       - name: Commit and push downloaded files
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # Check if anything was downloaded
           if [ -d downloads ] && [ "$(ls -A downloads)" ]; then
             git add downloads/
             git commit -m "📥 Download from Telegram: ${{ github.event.inputs.telegram_link }}"
             git push
           else
-            echo "⚠️ هیچ فایلی دانلود نشد. مطمئن شوید لینک عمومی است و پست حاوی مدیا باشد."
+            echo "⚠️ هیچ فایلی دانلود نشد. لطفاً بررسی کنید که لینک عمومی و دارای مدیا باشد."
           fi
